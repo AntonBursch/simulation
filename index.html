@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>simulation — step 1: world</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0a0a0c; color: #ddd; font: 12px/1.4 ui-monospace, Menlo, monospace; overflow: hidden; }
+    #app { position: fixed; inset: 0; }
+    #hud { position: fixed; top: 8px; left: 10px; pointer-events: none; opacity: 0.7; }
+    #hud .k { color: #888; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">
+    <div><span class="k">step</span> 1 — bounded world</div>
+    <div><span class="k">drag</span> orbit · <span class="k">wheel</span> zoom · <span class="k">right-drag</span> pan</div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
