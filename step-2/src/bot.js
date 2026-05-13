@@ -140,3 +140,24 @@ export function steerHeading(state, target, dt, turnRate = 2.5) {
   state.heading.copy(_from).applyQuaternion(_slerpQ).normalize();
   applyHeading(state);
 }
+
+/**
+ * One-shot kick along a direction (unit vector). Adds to current velocity
+ * rather than replacing it, so currents are not erased — the bot just
+ * receives an extra push.
+ */
+export function applyImpulse(state, direction, speed) {
+  if (!direction || !isFinite(speed) || speed === 0) return;
+  state.velocity.addScaledVector(direction, speed);
+}
+
+/**
+ * Snap the bot's heading to a new unit vector (no slew). Useful when
+ * the controller decides to commit to a new direction immediately, e.g.
+ * after timing out without any sensor signal.
+ */
+export function setHeading(state, direction) {
+  if (!direction) return;
+  state.heading.copy(direction).normalize();
+  applyHeading(state);
+}

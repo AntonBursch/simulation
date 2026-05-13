@@ -4,7 +4,7 @@ import { buildWorld } from './world.js';
 import { buildSources, updateSources } from './sources.js';
 import { makeFlowField } from './currents.js';
 import { buildParticles, updateParticles, setParticleMode } from './particles.js';
-import { buildBot, updateBotDrift, steerHeading } from './bot.js';
+import { buildBot, updateBotDrift, steerHeading, applyImpulse, setHeading } from './bot.js';
 import { createSensor, readSensor } from './sensor.js';
 
 const WORLD_SIZE = 300;
@@ -43,14 +43,17 @@ scene.add(sourcesGroup);
 const sampleFlow = makeFlowField({ size: WORLD_SIZE, amplitude: 22 });
 
 // Chemical particles emitted by sources.
+// Build capacity for the slider's max (300s) so we can crank trails live
+// without reallocating; start with a shorter lifetime.
 const particles = buildParticles({
   sources: sourcesGroup.userData.sources,
   size: WORLD_SIZE,
   perSourcePerSec: 20,
-  lifetimeSec: 15,
+  lifetimeSec: 300,
   diffusion: 1.8,
   pointSize: 6.0,
 });
+particles.lifetimeSec = 150;
 scene.add(particles.points);
 
 // The bot — stationary for now, just placed in the world.
@@ -64,6 +67,31 @@ scene.add(bot.group);
 // Sensor at the bot's nose.
 const sensor = createSensor({ radius: 18.0, antennaOffset: 2.5 });
 let lastSensorReading = { concentration: 0, direction: null, confidence: 0 };
+
+// --- Idle-impulse controller -----------------------------------------
+// If the bot doesn't sense anything (confidence below threshold) for
+// IDLE_LIMIT seconds, it picks a new random heading and gives itself a
+// single forward push (an impulse, not continuous thrust). The current
+// will then carry it / decelerate it naturally.
+const CONF_THRESH = 0.02;
+let IDLE_LIMIT = 15.0;        // seconds without smell before kicking
+let IMPULSE_SPEED = 300.0;    // velocity added along the new heading
+let idleTimer = 0;
+let lastKickAt = -Infinity;
+
+function randomUnitVector(out) {
+  // Marsaglia-style: uniform on the unit sphere.
+  let x, y, s;
+  do {
+    x = Math.random() * 2 - 1;
+    y = Math.random() * 2 - 1;
+    s = x * x + y * y;
+  } while (s >= 1 || s === 0);
+  const f = 2 * Math.sqrt(1 - s);
+  out.set(x * f, y * f, 1 - 2 * s);
+  return out;
+}
+const _kickDir = new THREE.Vector3();
 
 // Origin marker.
 const origin = new THREE.Mesh(
@@ -82,7 +110,11 @@ const camRow = document.createElement('div');
 hud.appendChild(camRow);
 const senseRow = document.createElement('div');
 hud.appendChild(senseRow);
-let camTarget = 'world'; // 'world' | 'bot'
+const idleRow = document.createElement('div');
+hud.appendChild(idleRow);
+let camTarget = 'bot'; // 'world' | 'bot' — start orbiting the bot
+controls.minDistance = 6.0;       // bodyLength * 1.5
+controls.maxDistance = WORLD_SIZE * 3;
 function refreshHud() {
   modeRow.innerHTML = `<span class="k">view</span> ${particles.mode === 'dev' ? 'dev (per-source color)' : 'truth (single scalar)'} <span class="k">— press D to toggle</span>`;
   countRow.innerHTML = `<span class="k">particles</span> ${particles.live} / ${particles.capacity}`;
@@ -93,6 +125,9 @@ function refreshHud() {
     ? `(${lastSensorReading.direction.x.toFixed(2)}, ${lastSensorReading.direction.y.toFixed(2)}, ${lastSensorReading.direction.z.toFixed(2)})`
     : 'flat';
   senseRow.innerHTML = `<span class="k">smell</span> c=${c} conf=${conf} dir=${dir}`;
+  const remaining = Math.max(0, IDLE_LIMIT - idleTimer).toFixed(1);
+  const sinceKick = isFinite(lastKickAt) ? (simTime - lastKickAt).toFixed(1) : '—';
+  idleRow.innerHTML = `<span class="k">idle</span> ${remaining}s to kick <span class="k">· last kick</span> ${sinceKick}s ago`;
 }
 refreshHud();
 
@@ -113,6 +148,45 @@ window.addEventListener('keydown', (e) => {
     refreshHud();
   }
 });
+
+// --- Slider control panel --------------------------------------------
+const panel = document.createElement('div');
+panel.id = 'controls';
+panel.style.cssText = [
+  'position:fixed','top:8px','right:10px','padding:8px 10px',
+  'background:rgba(0,0,0,0.35)','border:1px solid #222','border-radius:6px',
+  'font:12px/1.4 ui-monospace,Menlo,monospace','color:#ddd',
+  'pointer-events:auto','user-select:none','min-width:240px'
+].join(';');
+document.body.appendChild(panel);
+
+function addSlider(label, min, max, step, value, onInput) {
+  const row = document.createElement('div');
+  row.style.cssText = 'display:grid;grid-template-columns:70px 1fr 50px;align-items:center;gap:6px;margin:2px 0;';
+  const name = document.createElement('span');
+  name.textContent = label;
+  name.style.color = '#888';
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.min = String(min); input.max = String(max); input.step = String(step);
+  input.value = String(value);
+  input.style.width = '100%';
+  const out = document.createElement('span');
+  out.style.textAlign = 'right';
+  out.textContent = String(value);
+  input.addEventListener('input', () => {
+    const v = parseFloat(input.value);
+    out.textContent = (step < 1) ? v.toFixed(1) : String(v);
+    onInput(v);
+  });
+  row.appendChild(name); row.appendChild(input); row.appendChild(out);
+  panel.appendChild(row);
+  return input;
+}
+
+addSlider('trails',    1,   300, 1,   particles.lifetimeSec, (v) => { particles.lifetimeSec = v; });
+addSlider('countdown', 0.5, 30,  0.5, IDLE_LIMIT,            (v) => { IDLE_LIMIT = v; });
+addSlider('thrust',    0,   600, 10,  IMPULSE_SPEED,         (v) => { IMPULSE_SPEED = v; });
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -141,10 +215,22 @@ function frame() {
     // The bot drifts with the current too.
     updateBotDrift(bot, sampleFlow, FIXED_DT, simTime, WORLD_SIZE);
 
-    // Sense at the nose, then point toward the smell (no thrust yet).
+    // Sense at the nose. If we have a real signal, point toward it and
+    // reset the idle timer. Otherwise tick the countdown and, if it
+    // expires, pick a new random heading and give a single forward push.
     lastSensorReading = readSensor(bot, sensor, particles);
-    if (lastSensorReading.direction && lastSensorReading.confidence > 0.02) {
+    if (lastSensorReading.direction && lastSensorReading.confidence > CONF_THRESH) {
       steerHeading(bot, lastSensorReading.direction, FIXED_DT, 2.5);
+      idleTimer = 0;
+    } else {
+      idleTimer += FIXED_DT;
+      if (idleTimer >= IDLE_LIMIT) {
+        randomUnitVector(_kickDir);
+        setHeading(bot, _kickDir);
+        applyImpulse(bot, _kickDir, IMPULSE_SPEED);
+        lastKickAt = simTime;
+        idleTimer = 0;
+      }
     }
 
     simTime += FIXED_DT;
