@@ -4,7 +4,8 @@ import { buildWorld } from './world.js';
 import { buildSources, updateSources } from './sources.js';
 import { makeFlowField } from './currents.js';
 import { buildParticles, updateParticles, setParticleMode } from './particles.js';
-import { buildBot } from './bot.js';
+import { buildBot, updateBotDrift, steerHeading } from './bot.js';
+import { createSensor, readSensor } from './sensor.js';
 
 const WORLD_SIZE = 300;
 
@@ -60,6 +61,10 @@ const bot = buildBot({
 });
 scene.add(bot.group);
 
+// Sensor at the bot's nose.
+const sensor = createSensor({ radius: 18.0, antennaOffset: 2.5 });
+let lastSensorReading = { concentration: 0, direction: null, confidence: 0 };
+
 // Origin marker.
 const origin = new THREE.Mesh(
   new THREE.SphereGeometry(WORLD_SIZE * 0.005, 16, 16),
@@ -75,11 +80,19 @@ hud.appendChild(modeRow);
 hud.appendChild(countRow);
 const camRow = document.createElement('div');
 hud.appendChild(camRow);
+const senseRow = document.createElement('div');
+hud.appendChild(senseRow);
 let camTarget = 'world'; // 'world' | 'bot'
 function refreshHud() {
   modeRow.innerHTML = `<span class="k">view</span> ${particles.mode === 'dev' ? 'dev (per-source color)' : 'truth (single scalar)'} <span class="k">— press D to toggle</span>`;
   countRow.innerHTML = `<span class="k">particles</span> ${particles.live} / ${particles.capacity}`;
   camRow.innerHTML = `<span class="k">camera</span> ${camTarget} <span class="k">— press T to toggle</span>`;
+  const c = lastSensorReading.concentration.toFixed(2);
+  const conf = lastSensorReading.confidence.toFixed(2);
+  const dir = lastSensorReading.direction
+    ? `(${lastSensorReading.direction.x.toFixed(2)}, ${lastSensorReading.direction.y.toFixed(2)}, ${lastSensorReading.direction.z.toFixed(2)})`
+    : 'flat';
+  senseRow.innerHTML = `<span class="k">smell</span> c=${c} conf=${conf} dir=${dir}`;
 }
 refreshHud();
 
@@ -124,6 +137,16 @@ function frame() {
   while (accum >= FIXED_DT && steps < MAX_STEPS_PER_FRAME) {
     updateSources(sourcesGroup, sampleFlow, FIXED_DT, simTime, WORLD_SIZE);
     updateParticles(particles, sampleFlow, FIXED_DT, simTime, WORLD_SIZE);
+
+    // The bot drifts with the current too.
+    updateBotDrift(bot, sampleFlow, FIXED_DT, simTime, WORLD_SIZE);
+
+    // Sense at the nose, then point toward the smell (no thrust yet).
+    lastSensorReading = readSensor(bot, sensor, particles);
+    if (lastSensorReading.direction && lastSensorReading.confidence > 0.02) {
+      steerHeading(bot, lastSensorReading.direction, FIXED_DT, 2.5);
+    }
+
     simTime += FIXED_DT;
     accum -= FIXED_DT;
     steps++;

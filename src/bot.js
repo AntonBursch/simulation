@@ -82,3 +82,61 @@ export function applyHeading(state) {
   state.group.quaternion.copy(_q);
   state.nose.copy(state.position).addScaledVector(state.heading, state.bodyLength);
 }
+
+/**
+ * Advect the bot by the local current, with light drag and elastic wall
+ * bounce — same scheme used for sources, but the bot's `heading` is kept
+ * pointing wherever its controller set it (not derived from velocity).
+ */
+const _flow = new THREE.Vector3();
+export function updateBotDrift(state, sampleFlow, dt, t, size, opts = {}) {
+  const drag = opts.drag ?? 0.5;
+  const coupling = opts.coupling ?? 1.6;
+  const restitution = opts.restitution ?? 0.9;
+  const half = size / 2;
+
+  sampleFlow(_flow, state.position.x, state.position.y, state.position.z, t);
+  const v = state.velocity;
+  v.x += (_flow.x - v.x) * coupling * dt - v.x * drag * dt;
+  v.y += (_flow.y - v.y) * coupling * dt - v.y * drag * dt;
+  v.z += (_flow.z - v.z) * coupling * dt - v.z * drag * dt;
+
+  const p = state.position;
+  p.x += v.x * dt;
+  p.y += v.y * dt;
+  p.z += v.z * dt;
+
+  if (p.x >  half) { p.x =  half; if (v.x > 0) v.x = -v.x * restitution; }
+  if (p.x < -half) { p.x = -half; if (v.x < 0) v.x = -v.x * restitution; }
+  if (p.y >  half) { p.y =  half; if (v.y > 0) v.y = -v.y * restitution; }
+  if (p.y < -half) { p.y = -half; if (v.y < 0) v.y = -v.y * restitution; }
+  if (p.z >  half) { p.z =  half; if (v.z > 0) v.z = -v.z * restitution; }
+  if (p.z < -half) { p.z = -half; if (v.z < 0) v.z = -v.z * restitution; }
+
+  applyHeading(state); // keep nose cache fresh after the move
+}
+
+/**
+ * Smoothly slew the bot's heading toward `target` (unit vector) at a
+ * given max angular rate (radians/sec). Pass null to do nothing.
+ */
+const _axis = new THREE.Vector3();
+const _slerpQ = new THREE.Quaternion();
+const _curQ = new THREE.Quaternion();
+const _tgtQ = new THREE.Quaternion();
+export function steerHeading(state, target, dt, turnRate = 2.5) {
+  if (!target) return;
+  // Build target quaternion that points +Z along `target`.
+  _tgtQ.setFromUnitVectors(_from, target);
+  _curQ.setFromUnitVectors(_from, state.heading);
+  // Angle between the two
+  const dot = Math.min(1, Math.max(-1, _curQ.dot(_tgtQ)));
+  const angle = 2 * Math.acos(Math.abs(dot));
+  if (angle < 1e-4) return;
+  const maxStep = turnRate * dt;
+  const t = Math.min(1, maxStep / angle);
+  _slerpQ.copy(_curQ).slerp(_tgtQ, t);
+  // Extract new heading by rotating +Z by slerpQ.
+  state.heading.copy(_from).applyQuaternion(_slerpQ).normalize();
+  applyHeading(state);
+}
